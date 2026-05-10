@@ -2,6 +2,7 @@ import os
 import sys
 import tkinter as tk
 from tkinter import ttk
+
 from app.database import SessionLocal
 from app.models import Project, ProjectTask
 
@@ -17,7 +18,7 @@ if getattr(sys, "frozen", False):
         os.environ["TK_LIBRARY"] = tk_library
 
 
-def ask_project_for_block(app_name: str):
+def ask_project_for_block(app_name: str, suggested_project_id: int | None = None):
     db = SessionLocal()
     projects = db.query(Project).filter(Project.is_active == True).all()
     db.close()
@@ -26,7 +27,7 @@ def ask_project_for_block(app_name: str):
         "project_id": None,
         "action": "later",
         "task_text": "",
-        "comment_text": ""
+        "comment_text": "",
     }
 
     root = tk.Tk()
@@ -36,9 +37,9 @@ def ask_project_for_block(app_name: str):
 
     label = tk.Label(
         root,
-        text=f"Keine sichere Zuordnung gefunden.\n\nApp: {app_name}\n\nProjekt und Aufgabe wählen:",
+        text=f"App: {app_name}\n\nProjekt und Aufgabe wählen:",
         justify="left",
-        pady=10
+        pady=10,
     )
     label.pack()
 
@@ -50,9 +51,16 @@ def ask_project_for_block(app_name: str):
         textvariable=selected_project,
         values=project_names,
         state="readonly",
-        width=40
+        width=40,
     )
     combo.pack(pady=10)
+
+    if suggested_project_id is not None:
+        for project in projects:
+            if project.id == suggested_project_id:
+                selected_project.set(project.name)
+                combo.set(project.name)
+                break
 
     task_list_label = tk.Label(root, text="Vorhandene Aufgaben")
     task_list_label.pack()
@@ -64,7 +72,7 @@ def ask_project_for_block(app_name: str):
         textvariable=task_var,
         values=[],
         state="readonly",
-        width=40
+        width=40,
     )
     task_combo.pack(pady=5)
     task_combo.set("")
@@ -87,13 +95,13 @@ def ask_project_for_block(app_name: str):
     def load_tasks(event=None):
         chosen_name = selected_project.get()
 
-        for p in projects:
-            if p.name == chosen_name:
+        for project in projects:
+            if project.name == chosen_name:
                 db = SessionLocal()
-                tasks = db.query(ProjectTask).filter(ProjectTask.project_id == p.id).all()
+                tasks = db.query(ProjectTask).filter(ProjectTask.project_id == project.id).all()
                 db.close()
 
-                task_names = [""] + [t.name for t in tasks]
+                task_names = [""] + [task.name for task in tasks]
                 task_combo["values"] = task_names
                 break
 
@@ -118,6 +126,9 @@ def ask_project_for_block(app_name: str):
     task_entry.bind("<KeyRelease>", on_task_entry_change)
     comment_entry.bind("<KeyRelease>", lambda event: error_label.config(text=""))
 
+    if suggested_project_id is not None and selected_project.get():
+        load_tasks()
+
     def assign():
         chosen_name = selected_project.get()
         selected_task = task_var.get().strip()
@@ -138,9 +149,9 @@ def ask_project_for_block(app_name: str):
             error_label.config(text="Bitte Aufgabe oder Kommentar eingeben oder auf Später klicken.")
             return
 
-        for p in projects:
-            if p.name == chosen_name:
-                result["project_id"] = p.id
+        for project in projects:
+            if project.name == chosen_name:
+                result["project_id"] = project.id
                 result["action"] = "assign"
                 result["task_text"] = final_task
                 result["comment_text"] = comment_text
@@ -150,12 +161,10 @@ def ask_project_for_block(app_name: str):
 
     def later():
         result["action"] = "later"
-        task_value = task_var.get().strip() or task_entry.get().strip()
-        result["task_text"] = task_value
+        result["task_text"] = task_var.get().strip() or task_entry.get().strip()
         result["comment_text"] = comment_entry.get().strip()
         root.destroy()
 
-    
     button_frame = tk.Frame(root)
     button_frame.pack(pady=(12, 16))
 

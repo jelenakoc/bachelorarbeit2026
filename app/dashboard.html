@@ -88,6 +88,14 @@
             font-size: 14px;
         }
 
+        .topbar-actions {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            flex-wrap: wrap;
+            justify-content: flex-end;
+        }
+
         .card {
             background: var(--panel);
             border: 1px solid var(--line);
@@ -193,6 +201,22 @@
         button.secondary {
             background: var(--primary-soft);
             color: var(--primary-dark);
+        }
+
+        button.tracking-toggle.on {
+            background: var(--success);
+        }
+
+        button.tracking-toggle.on:hover {
+            background: #15803d;
+        }
+
+        button.tracking-toggle.off {
+            background: var(--danger);
+        }
+
+        button.tracking-toggle.off:hover {
+            background: #b91c1c;
         }
 
         .success {
@@ -419,7 +443,11 @@
                 <h1>Zeiterfassung</h1>
                 <div class="topbar-subtitle">Zeiterfassung, Projekte, Aufgaben und Umsatz auf einen Blick</div>
             </div>
-            <div class="pill" id="periodInfo">Zeitraum</div>
+            <div class="topbar-actions">
+                <div class="pill" id="trackingStatus">Tracking wird geladen...</div>
+                <button type="button" id="trackingToggleButton" class="tracking-toggle" onclick="toggleTracking()">Tracking wird geladen...</button>
+                <div class="pill" id="periodInfo">Zeitraum</div>
+            </div>
         </div>
 
         <div class="card">

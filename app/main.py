@@ -1,7 +1,11 @@
 ﻿import csv
 import io
 import math
+import atexit
+import subprocess
+import sys
 from datetime import date, datetime, timedelta
+from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse, StreamingResponse
@@ -10,14 +14,100 @@ from sqlalchemy.orm import Session
 
 from app.database import SessionLocal, engine
 from app.models import Base, Project, ActivityLog, ProjectKeyword, ProjectTask
-from app.paths import get_resource_path
+from app.paths import APP_ROOT, get_resource_path
 from app.schemas import ProjectCreate
 
+#Api-Anwendung
 app = FastAPI(title="BA Zeiterfassung API")
 
 Base.metadata.create_all(bind=engine)
 
+TRACKING_STATE_FILE = APP_ROOT / "tracking_state.txt"
+tracker_process: subprocess.Popen | None = None
 
+
+def is_tracking_enabled() -> bool:
+    try:
+        return TRACKING_STATE_FILE.read_text(encoding="utf-8").strip() != "0"
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return False
+
+
+def set_tracking_enabled(enabled: bool) -> bool:
+    TRACKING_STATE_FILE.write_text("1" if enabled else "0", encoding="utf-8")
+    return enabled
+
+
+def get_tracker_command() -> list[str] | None:
+    if getattr(sys, "frozen", False):
+        tracker_exe = APP_ROOT / "Tracker" / "Tracker.exe"
+        if tracker_exe.exists():
+            return [str(tracker_exe)]
+        return None
+
+    tracker_script = Path(__file__).resolve().parent / "tracker.py"
+    return [sys.executable, str(tracker_script)]
+
+
+def is_started_tracker_running() -> bool:
+    return tracker_process is not None and tracker_process.poll() is None
+
+
+def start_tracker_process() -> bool:
+    global tracker_process
+
+    if is_started_tracker_running():
+        return True
+
+    command = get_tracker_command()
+    if command is None:
+        return False
+
+    creationflags = 0
+    startupinfo = None
+
+    if sys.platform == "win32":
+        creationflags = getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
+
+    tracker_process = subprocess.Popen(
+        command,
+        cwd=str(APP_ROOT),
+        creationflags=creationflags,
+        startupinfo=startupinfo,
+    )
+    return True
+
+
+def stop_started_tracker_process():
+    global tracker_process
+
+    if not is_started_tracker_running():
+        tracker_process = None
+        return
+
+    tracker_process.terminate()
+    try:
+        tracker_process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        tracker_process.kill()
+    finally:
+        tracker_process = None
+
+
+def shutdown_tracker_process():
+    stop_started_tracker_process()
+
+
+atexit.register(shutdown_tracker_process)
+
+
+@app.on_event("startup")
+def reset_tracking_on_dashboard_start():
+    set_tracking_enabled(False)
+
+#Aufrunden auf 15 Minuten
 def round_to_15_minutes(seconds: float) -> float:
     if seconds <= 0:
         return 0
@@ -26,7 +116,7 @@ def round_to_15_minutes(seconds: float) -> float:
     rounded_minutes = math.ceil(minutes / 15) * 15
     return rounded_minutes * 60
 
-
+#Zeitblock in lesbarer Form bringen
 def format_hours_and_minutes(decimal_hours: float) -> str:
     total_minutes = round(decimal_hours * 60)
     hours = total_minutes // 60
@@ -38,11 +128,11 @@ def format_hours_and_minutes(decimal_hours: float) -> str:
         return f"{hours} Std"
     return f"{minutes} Min"
 
-
+#Dezimalzahlen für CSV mit Komma formatieren
 def format_decimal_for_csv(value: float | int) -> str:
     return f"{value:.2f}".replace(".", ",")
 
-
+#Stats als CSV exportieren
 def build_task_stats_csv(task_stats: list[dict]) -> str:
     buffer = io.StringIO()
     writer = csv.writer(buffer, delimiter=";")
@@ -62,7 +152,7 @@ def build_task_stats_csv(task_stats: list[dict]) -> str:
 
     return "\ufeff" + buffer.getvalue()
 
-
+#Datenmodelle für API-Requests
 class ActivityUpdate(BaseModel):
     project_id: int | None = None
     task_text: str = ""
@@ -70,6 +160,10 @@ class ActivityUpdate(BaseModel):
     needs_review: bool = False
     start_time: datetime | None = None
     end_time: datetime | None = None
+
+
+class TrackingSetRequest(BaseModel):
+    enabled: bool
 
 
 class ProjectUpdate(BaseModel):
@@ -81,7 +175,7 @@ class ProjectUpdate(BaseModel):
     is_active: bool = True
     keywords: list[str] = Field(default_factory=list)
 
-
+#Hilfsfunktion, um Zeiträume für Statistiken zu berechnen
 def get_period_range(
     period: str,
     selected_date: str | None = None,
@@ -160,12 +254,47 @@ def get_period_range(
 
     return start, end
 
-
+#Api direkt aufrufen:
 @app.get("/")
 def root():
     return {"message": "API läuft"}
 
 
+@app.get("/tracking/status")
+def get_tracking_status():
+    enabled = is_tracking_enabled()
+    return {
+        "enabled": enabled,
+        "process_running": is_started_tracker_running(),
+    }
+
+
+@app.post("/tracking/toggle")
+def toggle_tracking():
+    enabled = set_tracking_enabled(not is_tracking_enabled())
+    if enabled and not start_tracker_process():
+        set_tracking_enabled(False)
+        raise HTTPException(status_code=500, detail="Tracker konnte nicht gestartet werden.")
+
+    return {
+        "enabled": enabled,
+        "process_running": is_started_tracker_running(),
+    }
+
+
+@app.post("/tracking/set")
+def set_tracking_state(request: TrackingSetRequest):
+    enabled = set_tracking_enabled(request.enabled)
+    if enabled and not start_tracker_process():
+        set_tracking_enabled(False)
+        raise HTTPException(status_code=500, detail="Tracker konnte nicht gestartet werden.")
+
+    return {
+        "enabled": enabled,
+        "process_running": is_started_tracker_running(),
+    }
+
+#Projekte abrufen
 @app.get("/projects")
 def get_projects():
     db: Session = SessionLocal()
@@ -187,7 +316,7 @@ def get_projects():
     finally:
         db.close()
 
-
+#Projekt anlegen
 @app.post("/projects")
 def create_project(project_data: ProjectCreate):
     db: Session = SessionLocal()
@@ -215,7 +344,7 @@ def create_project(project_data: ProjectCreate):
     finally:
         db.close()
 
-
+#Bestehendes Projekt ändern
 @app.patch("/projects/{project_id}")
 def update_project(project_id: int, project_data: ProjectUpdate):
     db: Session = SessionLocal()
@@ -251,7 +380,7 @@ def update_project(project_id: int, project_data: ProjectUpdate):
     finally:
         db.close()
 
-
+#Projekte deaktivieren (nicht löschen)
 @app.patch("/projects/{project_id}/deactivate")
 def deactivate_project(project_id: int, active_to: date | None = None):
     db: Session = SessionLocal()
@@ -271,7 +400,7 @@ def deactivate_project(project_id: int, active_to: date | None = None):
     finally:
         db.close()
 
-
+#Aufgaben für Projekt abrufen
 @app.get("/projects/{project_id}/tasks")
 def get_tasks_for_project(project_id: int):
     db: Session = SessionLocal()
@@ -281,7 +410,7 @@ def get_tasks_for_project(project_id: int):
     finally:
         db.close()
 
-
+#Aufgabe für Projekt löschen
 @app.delete("/projects/{project_id}/tasks/{task_id}")
 def delete_task_for_project(project_id: int, task_id: int):
     db: Session = SessionLocal()
@@ -300,7 +429,7 @@ def delete_task_for_project(project_id: int, task_id: int):
     finally:
         db.close()
 
-
+#Zeitblöcke abrufen
 @app.get("/activities")
 def get_activities():
     db: Session = SessionLocal()
@@ -326,7 +455,7 @@ def get_activities():
     finally:
         db.close()
 
-
+#Aktivität aktualisieren
 @app.patch("/activities/{activity_id}")
 def update_activity(activity_id: int, update_data: ActivityUpdate):
     db: Session = SessionLocal()
@@ -383,7 +512,7 @@ def update_activity(activity_id: int, update_data: ActivityUpdate):
     finally:
         db.close()
 
-
+#Zeitblock löschen
 @app.delete("/activities/{activity_id}")
 def delete_activity(activity_id: int):
     db: Session = SessionLocal()
@@ -398,7 +527,7 @@ def delete_activity(activity_id: int):
     finally:
         db.close()
 
-
+#Zeitblöcke für Projekt abrufen
 @app.get("/activities/by-project/{project_id}")
 def get_activities_by_project(
     project_id: int,
@@ -439,7 +568,7 @@ def get_activities_by_project(
     finally:
         db.close()
 
-
+#Statistiken für Projekte abrufen
 @app.get("/stats/projects")
 def get_project_stats(
     period: str = Query(default="month"),
@@ -502,7 +631,7 @@ def get_project_stats(
     finally:
         db.close()
 
-
+#Statistiken für nicht zugeordnete Zeitblöcke abrufen
 @app.get("/stats/unassigned")
 def get_unassigned_stats(
     period: str = Query(default="month"),
@@ -525,7 +654,7 @@ def get_unassigned_stats(
     finally:
         db.close()
 
-
+#Statistiken für Umsatz abrufen
 @app.get("/stats/revenue")
 def get_revenue_stats(
     period: str = Query(default="month"),
@@ -560,7 +689,7 @@ def get_revenue_stats(
     finally:
         db.close()
 
-
+#Statistiken für Aufgaben abrufen
 @app.get("/stats/tasks")
 def get_task_stats(
     period: str = Query(default="month"),
@@ -631,7 +760,7 @@ def get_task_stats(
     finally:
         db.close()
 
-
+#Statistiken für Aufgaben als CSV exportieren
 @app.get("/exports/tasks")
 def export_task_stats(
     period: str = Query(default="month"),
@@ -654,12 +783,12 @@ def export_task_stats(
         headers={"Content-Disposition": "attachment; filename=aufgaben_auswertung.csv"},
     )
 
-
+#Dashboard-Seite und zugehörige Ressourcen bereitstellen
 @app.get("/dashboard")
 def get_dashboard():
     return FileResponse(get_resource_path("app", "dashboard.html"))
 
-
+#Dashboard-CSS
 @app.get("/dashboard.js")
 def get_dashboard_js():
     return FileResponse(get_resource_path("app", "dashboard.js"))

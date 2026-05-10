@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.database import SessionLocal, engine
 from app.models import Base, ActivityLog, ProjectKeyword, ProjectTask
+from app.paths import APP_ROOT
 from app.popup import ask_project_for_block
 
 Base.metadata.create_all(bind=engine)
@@ -16,13 +17,14 @@ Base.metadata.create_all(bind=engine)
 IDLE_STOP_SECONDS = 300
 MIN_ACTIVITY_SECONDS = 60
 POLL_INTERVAL_SECONDS = 2
+TRACKING_STATE_FILE = APP_ROOT / "tracking_state.txt"
 
-
+#Aktives-Fenstertitel
 def get_active_window_title():
     window = win32gui.GetForegroundWindow()
     return win32gui.GetWindowText(window)
 
-
+#Aktives-Fenster-App-Name
 def get_active_app_name():
     try:
         window = win32gui.GetForegroundWindow()
@@ -32,7 +34,7 @@ def get_active_app_name():
     except Exception:
         return None
 
-
+#Inaktvität
 def get_idle_seconds() -> float:
     class LASTINPUTINFO(ctypes.Structure):
         _fields_ = [
@@ -47,7 +49,7 @@ def get_idle_seconds() -> float:
     milliseconds = ctypes.windll.kernel32.GetTickCount() - last_input_info.dwTime
     return milliseconds / 1000.0
 
-
+#Bei Inaktivität Popup anzeigen
 def show_idle_pause_popup():
     ctypes.windll.user32.MessageBoxW(
         0,
@@ -56,7 +58,17 @@ def show_idle_pause_popup():
         0x40
     )
 
+#Tracking-Status aus gemeinsamer Datei lesen
+def is_tracking_enabled() -> bool:
+    try:
+        return TRACKING_STATE_FILE.read_text(encoding="utf-8").strip() != "0"
+    except FileNotFoundError:
+        return True
+    except OSError:
+        return True
 
+
+#Projekt-Match anhand von Keywords im Fenstertitel finden
 def find_project_match(db: Session, window_title: str, block_date):
     if not window_title:
         return None, None
@@ -85,31 +97,29 @@ def find_project_match(db: Session, window_title: str, block_date):
 
     return None, None
 
+
+#Vergleich, ob Kontext gleich bleibt oder neuer Block beginnt
 def is_same_context(
     last_app: str | None,
     current_app: str | None,
     last_title: str | None,
     current_title: str | None,
     db: Session,
-    block_date
+    block_date,
 ):
-    # Wenn die App wechselt -> neuer Block
     if last_app != current_app:
         return False
 
-    # Projekt-Match fÃ¼r beide Titel prÃ¼fen
     last_project_id, _ = find_project_match(db, last_title or "", block_date)
     current_project_id, _ = find_project_match(db, current_title or "", block_date)
 
-    # Wenn beide Titel demselben Projekt zugeordnet werden kÃ¶nnen:
-    # gleicher Kontext
     if last_project_id is not None and current_project_id is not None:
         return last_project_id == current_project_id
 
-    # Wenn kein Projekt erkannt wird, aber die App gleich bleibt:
-    # erstmal als gleicher Block behandeln
     return True
 
+
+#Wenn Nutzer manuell Projekt/Aufgabe zuordnet, neue Aufgabe speichern, falls sie noch nicht existiert
 def save_task_if_new(db: Session, project_id: int | None, task_text: str):
     if not project_id or not task_text:
         return
@@ -127,6 +137,7 @@ def save_task_if_new(db: Session, project_id: int | None, task_text: str):
         db.add(new_task)
         db.commit()
 
+#Aktivitätsblock speichern
 def save_activity_block(
     db: Session,
     app_name: str,
@@ -169,20 +180,17 @@ def save_activity_block(
     else:
         print("Block gespeichert ohne Projekt-Match")
 
-
+#Wenn kein Projekt erkannt wurde, aber Block lang genug ist, Nutzer fragen
 def maybe_ask_user_for_project(db: Session, app_name: str, duration: float, project_id: int | None):
-    if project_id is not None:
-        return project_id, None, "", "", False
-
     if duration < MIN_ACTIVITY_SECONDS:
         return None, None, "", "", True
 
-    popup_result = ask_project_for_block(app_name)
+    popup_result = ask_project_for_block(app_name, suggested_project_id=project_id)
 
     if popup_result["action"] == "assign":
         return (
             popup_result["project_id"],
-            "manuell",
+            "manuell" if popup_result["project_id"] != project_id else None,
             popup_result.get("task_text", ""),
             popup_result.get("comment_text", ""),
             False
@@ -196,7 +204,7 @@ def maybe_ask_user_for_project(db: Session, app_name: str, duration: float, proj
         True
     )
 
-
+#Block finalisieren: Projekt-Match finden, ggf. Nutzer fragen, Block speichern
 def finalize_current_block(
     db: Session,
     last_app: str | None,
@@ -238,7 +246,7 @@ def finalize_current_block(
 
     return duration
 
-
+#Hauptschleife: Aktives Fenster überwachen, Blöcke finalisieren, bei Inaktivität pausieren und Popup anzeigen
 def main():
     print("Tracker gestartet. DrÃ¼cke STRG+C zum Beenden.")
 
@@ -248,11 +256,36 @@ def main():
     last_app = get_active_app_name()
     block_start = datetime.now()
     tracking_paused_for_idle = False
+    tracking_paused_for_manual_stop = False
 
     print(f"Neuer Block in App: {last_app}")
 
     try:
         while True:
+            if not is_tracking_enabled():
+                if not tracking_paused_for_manual_stop:
+                    now = datetime.now()
+                    finalize_current_block(
+                        db=db,
+                        last_app=last_app,
+                        last_title=last_title,
+                        block_start=block_start,
+                        end_time=now,
+                        allow_popup=False,
+                    )
+                    tracking_paused_for_manual_stop = True
+                    print("Tracking manuell pausiert.")
+
+                time.sleep(POLL_INTERVAL_SECONDS)
+                continue
+
+            if tracking_paused_for_manual_stop:
+                last_title = get_active_window_title()
+                last_app = get_active_app_name()
+                block_start = datetime.now()
+                tracking_paused_for_manual_stop = False
+                print(f"Tracking fortgesetzt in App: {last_app}")
+
             idle_seconds = get_idle_seconds()
 
             if idle_seconds >= IDLE_STOP_SECONDS:
@@ -311,7 +344,6 @@ def main():
 
                 print(f"Neuer Block in App: {current_app}")
             else:
-                # gleicher Kontext: Titel kann sich Ã¤ndern, aber Block bleibt bestehen
                 last_title = current_title
                 last_app = current_app
 

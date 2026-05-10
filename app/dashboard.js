@@ -209,6 +209,12 @@ async function loadData() {
     resetProjectDetails();
 
     try {
+        await loadTrackingStatus();
+    } catch (e) {
+        console.error("Fehler bei loadTrackingStatus()", e);
+    }
+
+    try {
         await loadChart();
     } catch (e) {
         console.error("Fehler bei loadChart()", e);
@@ -248,6 +254,67 @@ async function loadData() {
         await loadProjects();
     } catch (e) {
         console.error("Fehler bei loadProjects()", e);
+    }
+}
+
+async function loadTrackingStatus() {
+    const status = document.getElementById("trackingStatus");
+    const button = document.getElementById("trackingToggleButton");
+
+    if (!status || !button) {
+        return;
+    }
+
+    const res = await fetch("/tracking/status");
+    const data = await res.json();
+    const enabled = Boolean(data.enabled);
+    const processRunning = Boolean(data.process_running);
+
+    status.textContent = enabled && processRunning
+        ? "Tracking aktiv"
+        : enabled
+            ? "Tracking startet..."
+            : "Tracking pausiert";
+    button.textContent = enabled ? "Tracking ausschalten" : "Tracking einschalten";
+    button.classList.toggle("on", enabled);
+    button.classList.toggle("off", !enabled);
+    button.setAttribute("aria-pressed", enabled ? "true" : "false");
+}
+
+async function toggleTracking() {
+    const button = document.getElementById("trackingToggleButton");
+    const status = document.getElementById("trackingStatus");
+
+    if (button) {
+        button.disabled = true;
+    }
+
+    try {
+        const currentlyEnabled = button?.getAttribute("aria-pressed") === "true";
+        const targetEnabled = !currentlyEnabled;
+
+        const res = await fetch("/tracking/set", {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json"
+            },
+            body: JSON.stringify({ enabled: targetEnabled })
+        });
+
+        if (!res.ok) {
+            throw new Error(`HTTP ${res.status}`);
+        }
+
+        await loadTrackingStatus();
+    } catch (error) {
+        if (status) {
+            status.textContent = "Tracking-API nicht erreichbar";
+        }
+        console.error("Fehler beim Umschalten des Trackings", error);
+    } finally {
+        if (button) {
+            button.disabled = false;
+        }
     }
 }
 
