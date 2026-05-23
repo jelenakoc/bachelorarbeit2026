@@ -143,8 +143,8 @@ def build_task_stats_csv(task_stats: list[dict]) -> str:
             [
                 item["project_name"],
                 item["task_name"],
-                format_hours_and_minutes(item["total_hours_raw"]),
-                format_hours_and_minutes(item["total_hours_billable"]),
+                format_decimal_for_csv(item["total_hours_raw"]),
+                format_decimal_for_csv(item["total_hours_billable"]),
                 format_decimal_for_csv(item["hourly_rate"]),
                 format_decimal_for_csv(item["revenue"]),
             ]

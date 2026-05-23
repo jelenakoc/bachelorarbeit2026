@@ -248,7 +248,7 @@ def finalize_current_block(
 
 #Hauptschleife: Aktives Fenster überwachen, Blöcke finalisieren, bei Inaktivität pausieren und Popup anzeigen
 def main():
-    print("Tracker gestartet. DrÃ¼cke STRG+C zum Beenden.")
+    print("Tracker gestartet. Drücke STRG+C zum Beenden.")
 
     db = SessionLocal()
 

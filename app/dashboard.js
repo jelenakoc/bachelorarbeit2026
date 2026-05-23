@@ -325,6 +325,8 @@ async function loadChart() {
     const mode = document.getElementById("chartMode").value;
     const labels = stats.map(p => p.project_name);
     const data = mode === "revenue" ? stats.map(p => p.revenue) : stats.map(p => p.total_hours_billable);
+    const datasetLabel = mode === "revenue" ? "Umsatz" : "Zeit";
+    const yAxisLabel = mode === "revenue" ? "Umsatz (\u20ac)" : "Stunden (h)";
     const colors = stats.map(p => p.color || "#999999");
     const ctx = document.getElementById("projectChart").getContext("2d");
 
@@ -338,7 +340,7 @@ async function loadChart() {
             labels,
             datasets: [
                 {
-                    label: mode === "revenue" ? "Umsatz (\u20ac)" : "Zeit (h)",
+                    label: datasetLabel,
                     data,
                     backgroundColor: colors,
                     barPercentage: 0.5,
@@ -351,6 +353,9 @@ async function loadChart() {
             maintainAspectRatio: false,
             devicePixelRatio: window.devicePixelRatio || 1,
             plugins: {
+                legend: {
+                    display: false
+                },
                 tooltip: {
                     callbacks: {
                         label: function(context) {
@@ -382,7 +387,16 @@ async function loadChart() {
             },
             scales: {
                 y: {
-                    beginAtZero: true
+                    beginAtZero: true,
+                    title: {
+                        display: true,
+                        text: yAxisLabel,
+                        color: "#241b4b",
+                        font: {
+                            size: 14,
+                            weight: "bold"
+                        }
+                    }
                 }
             }
         }
@@ -554,7 +568,6 @@ async function loadProjects() {
                 </td>
                 <td>
                     <span style="display:inline-block; width:18px; height:18px; background:${p.color ?? "#cccccc"}; border-radius:4px;"></span>
-                    ${p.color ?? "\u2014"}
                 </td>
                 <td>
                     <div class="action-buttons">
